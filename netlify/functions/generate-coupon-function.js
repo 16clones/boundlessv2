@@ -16,46 +16,73 @@
  * ---------------------------------------------------------------------------
  * ONE-TIME SETUP IN KLAVIYO
  * ---------------------------------------------------------------------------
- * 1. Content > Coupons > create a Coupon. Copy its Coupon ID.
- * 2. Settings > Account > API Keys > create a PRIVATE key with the
- *    `coupon-codes:write` scope.
+ * 1. Create a Coupon via the Coupons API (NOT the dashboard's "Uploaded
+ *    Coupons" flow — that requires a CSV). See prior setup notes for the
+ *    one-time curl command. Copy the returned Coupon `id`.
+ * 2. Settings > Account > API Keys > create a PRIVATE key with scopes:
+ *      coupon-codes:write
+ *      profiles:write
+ *      profiles:read
  * 3. Netlify site dashboard > Site configuration > Environment variables:
- *      KLAVIYO_PRIVATE_KEY = pk_xxxxxxxxxxxx
- *      KLAVIYO_COUPON_ID   = ABC123
+ *      KLAVIYO_PRIVATE_KEY   = pk_xxxxxxxxxxxx
+ *      KLAVIYO_COUPON_ID     = SMS15   (or whatever your Coupon's id is)
+ *      COUPON_EXPIRY_DAYS    = 30      (optional, defaults to 30)
+ *      ALLOWED_ORIGIN        = https://yoursite.com   (optional, defaults to *)
+ *    Also add, since the Coupon ID isn't a real secret and will otherwise
+ *    trip Netlify's secret scanner if it happens to match other text:
+ *      SECRETS_SCAN_OMIT_KEYS = KLAVIYO_COUPON_ID
  * 4. Deploy, then point COUPON_ENDPOINT in boundless_v2.html at the live URL.
  *
  * ---------------------------------------------------------------------------
- * DEBUGGING "Could not create coupon code"
+ * WHAT THIS VERSION ADDS OVER THE BASIC ONE
  * ---------------------------------------------------------------------------
- * This version returns Klaviyo's actual error detail in the JSON response
- * (visible in your browser's Network tab / console), instead of a generic
- * message. The most common causes, by status code:
+ * - Idempotency: if a phone number already has a code (stored as a profile
+ *   property), that same code is returned instead of minting a new one.
+ *   This is the main abuse guard — without it, anyone could resubmit the
+ *   form forever and rack up unlimited discount codes.
+ * - CORS: proper preflight (OPTIONS) handling + Access-Control-Allow-Origin
+ *   header, so the browser fetch doesn't silently fail if the site and
+ *   function ever end up on different origins.
+ * - Input validation: rejects requests without a plausible phone number
+ *   before spending a Klaviyo API call on them.
+ * - Collision retry: if a generated code happens to collide with an
+ *   existing one (extremely unlikely with 6 random chars, but not
+ *   impossible), it retries with a fresh code up to 3 times.
+ * - Expiration: codes are created with an expiry date (default 30 days,
+ *   configurable via COUPON_EXPIRY_DAYS) instead of living forever.
+ * - Profile tracking: the assigned code is written back onto the person's
+ *   Klaviyo profile as a custom property, so you can look up who has what
+ *   code directly in the dashboard (Audience > Profiles > search phone).
  *
- *   401 Unauthorized       -> KLAVIYO_PRIVATE_KEY is wrong, or the key
- *                             doesn't have the `coupon-codes:write` scope.
- *   404 Not Found           -> KLAVIYO_COUPON_ID doesn't match a real coupon
- *                             in your account (double check you copied the
- *                             Coupon ID, not the coupon's name).
- *   400 Invalid input       -> unique_code format rejected, or a code
- *                             collision (astronomically rare with 6 random
- *                             chars, but possible if you're re-testing fast).
- *   500 missing configuration -> env vars aren't set on Netlify, or aren't
- *                             set on the specific deploy context you're
- *                             testing against (Production vs Preview/branch
- *                             deploys don't automatically inherit Production
- *                             env vars unless you scope them to "All").
- *
- * Once you see the real Klaviyo error in the response, it's usually obvious
- * which of these it is.
+ * Not covered (out of scope for a stateless function without a database):
+ * - IP-based rate limiting. Real abuse protection beyond "one code per
+ *   phone number" would need persistent storage (e.g. Netlify Blobs) to
+ *   track request counts across invocations.
  */
 
+const KLAVIYO_REVISION = '2026-04-15';
+
 export default async (req) => {
+  const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json'
+  };
+
+  // Handle CORS preflight.
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return jsonResponse({ error: 'Method not allowed' }, 405, corsHeaders);
   }
 
   const KLAVIYO_PRIVATE_KEY = process.env.KLAVIYO_PRIVATE_KEY;
   const KLAVIYO_COUPON_ID = process.env.KLAVIYO_COUPON_ID;
+  const COUPON_EXPIRY_DAYS = Number(process.env.COUPON_EXPIRY_DAYS) || 30;
 
   const missing = [];
   if (!KLAVIYO_PRIVATE_KEY) missing.push('KLAVIYO_PRIVATE_KEY');
@@ -65,82 +92,198 @@ export default async (req) => {
     return jsonResponse({
       error: 'Server is missing Klaviyo configuration',
       missing
-    }, 500);
+    }, 500, corsHeaders);
   }
 
-  // Generate a short, unique, human-typeable code, e.g. "SMS15-7K2P9Q".
-  const uniqueCode = `SMS15-${generateRandomSuffix(6)}`;
-
-  let klaviyoRes;
+  // ---- 1) Validate input ----
+  let body;
   try {
-    klaviyoRes = await fetch('https://a.klaviyo.com/api/coupon-codes/', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/vnd.api+json',
-        'Authorization': `Klaviyo-API-Key ${KLAVIYO_PRIVATE_KEY}`,
-        'revision': '2026-04-15'
-      },
-      body: JSON.stringify({
-        data: {
-          type: 'coupon-code',
-          attributes: {
-            unique_code: uniqueCode
-          },
-          relationships: {
-            coupon: {
-              data: { type: 'coupon', id: KLAVIYO_COUPON_ID }
+    body = await req.json();
+  } catch (err) {
+    return jsonResponse({ error: 'Request body must be valid JSON' }, 400, corsHeaders);
+  }
+
+  const phone = (body && body.phone || '').trim();
+  const phoneValid = /^\+[1-9]\d{7,14}$/.test(phone);
+  if (!phoneValid) {
+    return jsonResponse({ error: 'A valid E.164 phone number is required (e.g. +14079829002)' }, 400, corsHeaders);
+  }
+
+  const authHeaders = {
+    'Content-Type': 'application/vnd.api+json',
+    'Authorization': `Klaviyo-API-Key ${KLAVIYO_PRIVATE_KEY}`,
+    'revision': KLAVIYO_REVISION
+  };
+
+  // ---- 2) Idempotency check: does this phone already have a code? ----
+  try {
+    const existingCode = await findExistingCode(phone, authHeaders);
+    if (existingCode) {
+      return jsonResponse({ code: existingCode, reused: true }, 200, corsHeaders);
+    }
+  } catch (lookupErr) {
+    // Non-fatal — if the lookup itself fails, we fall through and mint a
+    // new code rather than blocking the visitor entirely. Logged for
+    // visibility, but not surfaced as an error to the client.
+    console.error('Idempotency lookup failed (continuing anyway):', lookupErr);
+  }
+
+  // ---- 3) Mint a coupon code, retrying on rare collisions ----
+  const expiresAt = new Date(Date.now() + COUPON_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  let code = null;
+  let lastError = null;
+  const MAX_ATTEMPTS = 3;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const candidate = `CODE-${generateRandomSuffix(6)}`;
+
+    let klaviyoRes;
+    try {
+      klaviyoRes = await fetch('https://a.klaviyo.com/api/coupon-codes/', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          data: {
+            type: 'coupon-code',
+            attributes: {
+              unique_code: candidate,
+              expires_at: expiresAt
+            },
+            relationships: {
+              coupon: { data: { type: 'coupon', id: KLAVIYO_COUPON_ID } }
             }
           }
-        }
-      })
-    });
-  } catch (networkErr) {
-    // fetch() itself threw — e.g. DNS/network failure reaching Klaviyo.
-    console.error('Network error calling Klaviyo:', networkErr);
-    return jsonResponse({
-      error: 'Could not reach Klaviyo',
-      detail: String(networkErr && networkErr.message || networkErr)
-    }, 502);
-  }
-
-  if (!klaviyoRes.ok) {
-    // Try to parse Klaviyo's structured error body; fall back to raw text
-    // if it isn't valid JSON.
-    let detail = null;
-    let rawBody = null;
-    try {
-      rawBody = await klaviyoRes.text();
-      const parsed = JSON.parse(rawBody);
-      detail = parsed && parsed.errors ? parsed.errors : parsed;
-    } catch (parseErr) {
-      detail = rawBody;
+        })
+      });
+    } catch (networkErr) {
+      console.error('Network error calling Klaviyo (coupon-codes):', networkErr);
+      return jsonResponse({
+        error: 'Could not reach Klaviyo',
+        detail: String(networkErr && networkErr.message || networkErr)
+      }, 502, corsHeaders);
     }
 
-    console.error('Klaviyo coupon-code creation failed:', klaviyoRes.status, detail);
+    if (klaviyoRes.ok) {
+      code = candidate;
+      break;
+    }
 
-    return jsonResponse({
-      error: 'Could not create coupon code',
-      klaviyo_status: klaviyoRes.status,
-      klaviyo_detail: detail,
-      hint: hintForStatus(klaviyoRes.status),
-      attempted_coupon_id: KLAVIYO_COUPON_ID
-    }, 502);
+    const detail = await safeParseError(klaviyoRes);
+    lastError = { status: klaviyoRes.status, detail };
+
+    const isCollision = klaviyoRes.status === 400 &&
+      JSON.stringify(detail).toLowerCase().includes('already exist');
+
+    if (!isCollision) {
+      // Not a collision — retrying won't help (bad coupon ID, auth issue,
+      // etc). Fail fast with the real error.
+      console.error('Klaviyo coupon-code creation failed (non-retryable):', klaviyoRes.status, detail);
+      return jsonResponse({
+        error: 'Could not create coupon code',
+        klaviyo_status: klaviyoRes.status,
+        klaviyo_detail: detail,
+        hint: hintForStatus(klaviyoRes.status),
+        attempted_coupon_id: KLAVIYO_COUPON_ID
+      }, 502, corsHeaders);
+    }
+
+    console.warn(`Coupon code collision on attempt ${attempt}, retrying...`);
   }
 
-  return jsonResponse({ code: uniqueCode }, 200);
+  if (!code) {
+    console.error('Exhausted retries creating coupon code:', lastError);
+    return jsonResponse({
+      error: 'Could not create a unique coupon code after multiple attempts',
+      klaviyo_status: lastError && lastError.status,
+      klaviyo_detail: lastError && lastError.detail
+    }, 502, corsHeaders);
+  }
+
+  // ---- 4) Write the code back onto the profile for tracking/idempotency ----
+  try {
+    await tagProfileWithCode(phone, code, authHeaders);
+  } catch (tagErr) {
+    // Non-fatal — the code is already valid and usable even if we fail to
+    // record it on the profile. Logged so it can be investigated.
+    console.error('Failed to tag profile with assigned code (code is still valid):', tagErr);
+  }
+
+  return jsonResponse({ code }, 200, corsHeaders);
 };
+
+/**
+ * Looks up a profile by phone number and returns a previously-assigned
+ * coupon code, if any, from its custom properties.
+ */
+async function findExistingCode(phone, authHeaders) {
+  const filter = encodeURIComponent(`equals(phone_number,"${phone}")`);
+  const res = await fetch(`https://a.klaviyo.com/api/profiles/?filter=${filter}`, {
+    method: 'GET',
+    headers: authHeaders
+  });
+
+  if (!res.ok) {
+    throw new Error(`Profile lookup failed with status ${res.status}`);
+  }
+
+  const data = await res.json();
+  const profile = data && data.data && data.data[0];
+  const props = profile && profile.attributes && profile.attributes.properties;
+  return (props && props.sms_gate_coupon_code) || null;
+}
+
+/**
+ * Upserts a profile by phone number and stores the assigned code as a
+ * custom property, so it's visible in the Klaviyo dashboard and so future
+ * requests from the same number are idempotent.
+ */
+async function tagProfileWithCode(phone, code, authHeaders) {
+  const res = await fetch('https://a.klaviyo.com/api/profile-import/', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      data: {
+        type: 'profile',
+        attributes: {
+          phone_number: phone,
+          properties: {
+            sms_gate_coupon_code: code,
+            sms_gate_coupon_assigned_at: new Date().toISOString()
+          }
+        }
+      }
+    })
+  });
+
+  if (!res.ok) {
+    const detail = await safeParseError(res);
+    throw new Error(`Profile tagging failed with status ${res.status}: ${JSON.stringify(detail)}`);
+  }
+}
+
+async function safeParseError(res) {
+  let rawBody = null;
+  try {
+    rawBody = await res.text();
+    const parsed = JSON.parse(rawBody);
+    return parsed && parsed.errors ? parsed.errors : parsed;
+  } catch (parseErr) {
+    return rawBody;
+  }
+}
 
 function hintForStatus(status) {
   if (status === 401) return 'Check that KLAVIYO_PRIVATE_KEY is correct and has the coupon-codes:write scope.';
-  if (status === 404) return 'Check that KLAVIYO_COUPON_ID matches a real Coupon ID in your Klaviyo account (Content > Coupons).';
+  if (status === 404) return 'Check that KLAVIYO_COUPON_ID matches a real Coupon ID in your Klaviyo account (Content > Coupons > API Coupons).';
   if (status === 400) return 'Klaviyo rejected the request body — see klaviyo_detail above for the exact field it flagged.';
   return 'See klaviyo_detail above for specifics from Klaviyo.';
 }
 
-function jsonResponse(body, status) {
+function jsonResponse(body, status, extraHeaders) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' }
+    headers: extraHeaders || { 'Content-Type': 'application/json' }
   });
 }
 
