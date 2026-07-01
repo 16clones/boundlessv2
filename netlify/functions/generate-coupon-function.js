@@ -122,7 +122,8 @@ export default async (req) => {
       error: 'Could not create coupon code',
       klaviyo_status: klaviyoRes.status,
       klaviyo_detail: detail,
-      hint: hintForStatus(klaviyoRes.status)
+      hint: hintForStatus(klaviyoRes.status),
+      attempted_coupon_id: KLAVIYO_COUPON_ID
     }, 502);
   }
 
