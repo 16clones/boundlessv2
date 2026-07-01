@@ -591,6 +591,7 @@
   }
   .secret-card-info{
     padding:0;
+    cursor:pointer;
   }
   .secret-card-name{
     font-weight:600;
@@ -1897,6 +1898,7 @@ function renderGateSecretProducts(){
     const img = card.querySelector('.secret-card-image');
     const canvas = card.querySelector('.secret-card-pixelated');
     const stage = card.querySelector('.secret-card-stage');
+    const info = card.querySelector('.secret-card-info');
 
     img.onload = () => {
       createPixelatedImage(img, canvas, 10);
@@ -1906,7 +1908,8 @@ function renderGateSecretProducts(){
     const isMobile = window.innerWidth <= 768;
     
     if(isMobile){
-      stage.addEventListener('click', () => {
+      stage.addEventListener('click', (e) => {
+        e.stopPropagation();
         canvas.classList.add('revealed');
       });
     } else {
@@ -1918,10 +1921,8 @@ function renderGateSecretProducts(){
       });
     }
 
-    card.addEventListener('click', (e) => {
-      if(!e.target.classList.contains('secret-card-pixelated')) {
-        openProduct(p.id);
-      }
+    info.addEventListener('click', () => {
+      openProduct(p.id);
     });
 
     grid.appendChild(card);
