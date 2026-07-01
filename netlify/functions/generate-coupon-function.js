@@ -56,11 +56,34 @@
  *
  * Not covered (out of scope for a stateless function without a database):
  * - IP-based rate limiting. Real abuse protection beyond "one code per
- *   phone number" would need persistent storage (e.g. Netlify Blobs) to
- *   track request counts across invocations.
+ *   phone number" would need persistent storage across invocations.
+ *
+ * ---------------------------------------------------------------------------
+ * UPDATE: NOW WRITES TO NETLIFY BLOBS (needed for checkout validation)
+ * ---------------------------------------------------------------------------
+ * Klaviyo's Coupon Codes API has no way to look up a code by the code
+ * string itself (its filters only support expires_at, status, coupon.id,
+ * and profile.id — never the code text a customer types). So checkout
+ * can't ask Klaviyo "is CODE-4K7QRT valid?" directly.
+ *
+ * To make validate-coupon-function.js and redeem-coupon-function.js work,
+ * this function now also writes its own record to Netlify Blobs the
+ * moment it mints a code:
+ *   key:   coupon:<CODE>
+ *   value: { phone, expiresAt, redeemed: false, createdAt }
+ * That record is the source of truth checkout validates against.
+ *
+ * Requires the @netlify/blobs package. If you're deploying via git push,
+ * add it to your package.json:
+ *   npm install @netlify/blobs
+ * Blob stores are created automatically on first write — no separate
+ * provisioning step needed.
  */
 
+import { getStore } from '@netlify/blobs';
+
 const KLAVIYO_REVISION = '2026-04-15';
+const COUPON_STORE_NAME = 'sms-gate-coupons';
 
 export default async (req) => {
   const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
@@ -200,7 +223,24 @@ export default async (req) => {
     }, 502, corsHeaders);
   }
 
-  // ---- 4) Write the code back onto the profile for tracking/idempotency ----
+  // ---- 4) Record the code in our own store so checkout can validate it ----
+  // (Klaviyo has no "look up by code string" API — see note at top of file.)
+  try {
+    const store = getStore(COUPON_STORE_NAME);
+    await store.setJSON(`coupon:${code}`, {
+      phone,
+      expiresAt,
+      redeemed: false,
+      createdAt: new Date().toISOString()
+    });
+  } catch (blobErr) {
+    // Non-fatal — the Klaviyo code is still valid even if we fail to
+    // record it locally, but checkout won't be able to validate it until
+    // this succeeds. Logged for investigation.
+    console.error('Failed to write coupon record to Blobs (checkout validation may fail for this code):', blobErr);
+  }
+
+  // ---- 5) Write the code back onto the profile for tracking/idempotency ----
   try {
     await tagProfileWithCode(phone, code, authHeaders);
   } catch (tagErr) {
