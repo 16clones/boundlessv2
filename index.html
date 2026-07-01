@@ -1191,10 +1191,10 @@ const KLAVIYO_LIST_ID = "SejjkU";
 const COUPON_ENDPOINT = "https://boundlessv2.com/.netlify/functions/generate-coupon-function";
 // Checks a typed-in code at checkout against the record generate-coupon-function.js
 // wrote to Netlify Blobs. See validate-coupon-function.js for what to deploy here.
-const COUPON_VALIDATE_ENDPOINT = "https://boundlessv2.com/.netlify/functions/validate-coupon-function";
+const COUPON_VALIDATE_ENDPOINT = "https://boundlessv2.com/.netlify/functions/validate-coupon";
 // Marks a code as used the moment an order is placed, so it can't be reapplied.
 // See redeem-coupon-function.js for what to deploy here.
-const COUPON_REDEEM_ENDPOINT = "https://boundlessv2.com/.netlify/functions/redeem-coupon-function";
+const COUPON_REDEEM_ENDPOINT = "https://boundlessv2.com/.netlify/functions/redeem-coupon";
 
 function toggleNotifyForm(){
   const wrap = document.getElementById('gateNotifyWrap');
