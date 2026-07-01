@@ -544,67 +544,6 @@
   }
 
   /* ---------- SECRET PRODUCTS (PIXELATED) ---------- */
-  .secret-card{
-    cursor:pointer;
-  }
-  .secret-card-stage{
-    position:relative;
-    height:340px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    margin-bottom:12px;
-    border:1px solid var(--line);
-    overflow:hidden;
-  }
-  .secret-card-swing{
-    position:relative;
-    transform-origin:50% 0%;
-    animation:swing 3.2s ease-in-out infinite;
-  }
-  .secret-card-image-container{
-    position:relative;
-    width:100%;
-    height:100%;
-  }
-  .secret-card-image{
-    width:100%;
-    height:100%;
-    object-fit:cover;
-    display:block;
-  }
-  .secret-card-pixelated{
-    position:absolute;
-    top:0;
-    left:0;
-    width:100%;
-    height:100%;
-    image-rendering:pixelated;
-    image-rendering:-moz-crisp-edges;
-    image-rendering:crisp-edges;
-    opacity:1;
-    transition:opacity 0.3s ease;
-  }
-  .secret-card-pixelated.revealed{
-    opacity:0;
-    pointer-events:none;
-  }
-  .secret-card-info{
-    padding:0;
-    cursor:pointer;
-  }
-  .secret-card-name{
-    font-weight:600;
-    font-size:13px;
-    margin-bottom:4px;
-    text-transform:capitalize;
-  }
-  .secret-card-price{
-    font-size:12px;
-    color:var(--ink-soft);
-    margin-bottom:12px;
-  }
-
   .grid{
     display:grid;
     grid-template-columns:repeat(2,1fr);
@@ -1861,69 +1800,23 @@ function toggleGateSecret(){
   }
 }
 
-function createPixelatedImage(img, canvas, pixelSize){
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
-  
-  ctx.drawImage(img, 0, 0, w / pixelSize, h / pixelSize);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(canvas, 0, 0, w / pixelSize, h / pixelSize, 0, 0, w, h);
-}
-
 function renderGateSecretProducts(){
   const grid = document.getElementById('gateSecretGrid');
   grid.innerHTML = '';
   SECRET_PRODUCTS.forEach(p=>{
     const card = document.createElement('div');
-    card.className = 'secret-card';
+    card.className = 'card';
     card.innerHTML = `
-      <div class="secret-card-stage">
-        <div class="secret-card-swing">
-          <div class="secret-card-image-container">
-            <img class="secret-card-image" src="${p.img}" alt="${p.name}" style="display:none;">
-            <canvas class="secret-card-pixelated" data-product-id="${p.id}"></canvas>
-          </div>
-        </div>
+      <div class="card-stage">
+        <div class="card-swing"><img src="${p.img}" alt="${p.name}"></div>
       </div>
-      <div class="secret-card-info">
-        <div class="secret-card-name">${p.name}</div>
-        <div class="secret-card-price">$${p.price.toFixed(2)}</div>
+      <div class="card-info">
+        <div class="card-name">${p.name}</div>
+        <div class="card-price">$${p.price.toFixed(2)}</div>
       </div>
     `;
 
-    const img = card.querySelector('.secret-card-image');
-    const canvas = card.querySelector('.secret-card-pixelated');
-    const stage = card.querySelector('.secret-card-stage');
-    const info = card.querySelector('.secret-card-info');
-
-    img.onload = () => {
-      createPixelatedImage(img, canvas, 10);
-    };
-    img.src = p.img;
-
-    const isMobile = window.innerWidth <= 768;
-    
-    if(isMobile){
-      stage.addEventListener('click', (e) => {
-        e.stopPropagation();
-        canvas.classList.add('revealed');
-      });
-    } else {
-      stage.addEventListener('mouseenter', () => {
-        canvas.classList.add('revealed');
-      });
-      stage.addEventListener('mouseleave', () => {
-        canvas.classList.remove('revealed');
-      });
-    }
-
-    info.addEventListener('click', () => {
-      openProduct(p.id);
-    });
+    card.querySelector('.card-stage').addEventListener('click', ()=> openProduct(p.id));
 
     grid.appendChild(card);
   });
