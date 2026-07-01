@@ -1124,7 +1124,7 @@
             </div>
           </div>
 
-          <button class="btn btn-solid btn-full" style="margin-top:20px;" onclick="placeOrder()">place order</button>
+          <button class="btn btn-solid btn-full" id="placeOrderBtn" style="margin-top:20px;" onclick="placeOrder()">place order</button>
           <p class="note">this is a demo checkout for boundless v2 — no real payment is processed. connect a payment provider before launch.</p>
         </div>
 
@@ -1189,6 +1189,12 @@ const KLAVIYO_LIST_ID = "SejjkU";
 // URL of the backend function that mints a real, unique Klaviyo coupon code.
 // See generate-coupon-function.js (in the same download) for what to deploy here.
 const COUPON_ENDPOINT = "https://boundlessv2.com/.netlify/functions/generate-coupon-function";
+// Checks a typed-in code at checkout against the record generate-coupon-function.js
+// wrote to Netlify Blobs. See validate-coupon-function.js for what to deploy here.
+const COUPON_VALIDATE_ENDPOINT = "https://boundlessv2.com/.netlify/functions/validate-coupon-function";
+// Marks a code as used the moment an order is placed, so it can't be reapplied.
+// See redeem-coupon-function.js for what to deploy here.
+const COUPON_REDEEM_ENDPOINT = "https://boundlessv2.com/.netlify/functions/redeem-coupon-function";
 
 function toggleNotifyForm(){
   const wrap = document.getElementById('gateNotifyWrap');
@@ -1526,11 +1532,13 @@ async function saveDiscount(){
 function discountAmount(){
   return subtotal() * discountPercent;
 }
-function applyDiscount(inputId, msgId){
+async function applyDiscount(inputId, msgId){
   const input = document.getElementById(inputId);
   const code = input.value.trim().toLowerCase();
   const msg = document.getElementById(msgId);
   if(!code){ return; }
+
+  // 1) Manual demo codes — no backend needed.
   if(DISCOUNT_CODES[code] !== undefined){
     discountCode = code;
     discountPercent = DISCOUNT_CODES[code];
@@ -1538,9 +1546,39 @@ function applyDiscount(inputId, msgId){
     msg.textContent = '';
     renderAll();
     if(document.getElementById('view-checkout').classList.contains('active')) renderCheckout();
-  } else {
-    msg.textContent = 'invalid code';
+    return;
   }
+
+  // 2) Real codes minted via the SMS gate — check with the backend, since
+  //    those live in Klaviyo/Blobs, not in the DISCOUNT_CODES object above.
+  msg.textContent = 'checking code...';
+  try{
+    const res = await fetch(COUPON_VALIDATE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+
+    if(res.ok && data.valid){
+      discountCode = code;
+      discountPercent = data.percent;
+      saveDiscount();
+      msg.textContent = '';
+      renderAll();
+      if(document.getElementById('view-checkout').classList.contains('active')) renderCheckout();
+      return;
+    }
+
+    msg.textContent = messageForInvalidReason(data.reason);
+  }catch(err){
+    msg.textContent = 'could not check that code — try again';
+  }
+}
+function messageForInvalidReason(reason){
+  if(reason === 'already_used') return 'this code has already been used';
+  if(reason === 'expired') return 'this code has expired';
+  return 'invalid code';
 }
 function removeDiscount(){
   discountCode = null;
@@ -1808,8 +1846,36 @@ function goTo(page){
   window.scrollTo(0,0);
 }
 
-function placeOrder(){
+async function placeOrder(){
   const email = document.getElementById('ckEmail').value || 'your inbox';
+
+  // If a real (non-demo) code is applied, mark it used now — before we
+  // show a confirmation — so it can never be applied again. Demo codes
+  // in DISCOUNT_CODES aren't tracked server-side, so skip this for those.
+  if(discountCode && DISCOUNT_CODES[discountCode] === undefined){
+    const placeBtn = document.getElementById('placeOrderBtn');
+    if(placeBtn){ placeBtn.disabled = true; placeBtn.textContent = 'placing order...'; }
+    try{
+      const res = await fetch(COUPON_REDEEM_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: discountCode })
+      });
+      const data = await res.json();
+      if(!res.ok || !data.redeemed){
+        if(placeBtn){ placeBtn.disabled = false; placeBtn.textContent = 'place order'; }
+        removeDiscount();
+        renderCheckout();
+        alert('That discount code just became invalid (' + messageForInvalidReason(data.reason) + '). It has been removed — please review your total and place the order again.');
+        return;
+      }
+    }catch(err){
+      if(placeBtn){ placeBtn.disabled = false; placeBtn.textContent = 'place order'; }
+      alert('Could not verify your discount code right now — please try again.');
+      return;
+    }
+  }
+
   lastOrder = {
     email,
     number: 'bv2-' + Math.floor(100000 + Math.random()*900000),
