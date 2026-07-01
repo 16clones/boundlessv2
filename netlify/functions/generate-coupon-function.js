@@ -10,50 +10,70 @@
  * ---------------------------------------------------------------------------
  * Netlify Functions v2 auto-detects files placed at:
  *   netlify/functions/generate-coupon.js
- * in your site's repo root. No extra config needed — Netlify wires up the
- * route automatically at:
+ * Live at:
  *   https://YOUR-SITE.netlify.app/.netlify/functions/generate-coupon
  *
  * ---------------------------------------------------------------------------
  * ONE-TIME SETUP IN KLAVIYO
  * ---------------------------------------------------------------------------
- * 1. In Klaviyo, go to Content > Coupons and create a Coupon (this holds the
- *    discount definition — e.g. "10% off", one-time use, expiration, etc).
- *    Copy its Coupon ID.
- * 2. Go to Settings > Account > API Keys and create a PRIVATE API key with
- *    the `coupon-codes:write` scope. Never put this key in front-end code.
- * 3. In your Netlify site dashboard: Site configuration > Environment
- *    variables, add:
+ * 1. Content > Coupons > create a Coupon. Copy its Coupon ID.
+ * 2. Settings > Account > API Keys > create a PRIVATE key with the
+ *    `coupon-codes:write` scope.
+ * 3. Netlify site dashboard > Site configuration > Environment variables:
  *      KLAVIYO_PRIVATE_KEY = pk_xxxxxxxxxxxx
  *      KLAVIYO_COUPON_ID   = ABC123
- * 4. Deploy (git push, or `netlify deploy`), then set COUPON_ENDPOINT in
- *    boundless_v2.html to:
- *      https://YOUR-SITE.netlify.app/.netlify/functions/generate-coupon
+ * 4. Deploy, then point COUPON_ENDPOINT in boundless_v2.html at the live URL.
+ *
+ * ---------------------------------------------------------------------------
+ * DEBUGGING "Could not create coupon code"
+ * ---------------------------------------------------------------------------
+ * This version returns Klaviyo's actual error detail in the JSON response
+ * (visible in your browser's Network tab / console), instead of a generic
+ * message. The most common causes, by status code:
+ *
+ *   401 Unauthorized       -> KLAVIYO_PRIVATE_KEY is wrong, or the key
+ *                             doesn't have the `coupon-codes:write` scope.
+ *   404 Not Found           -> KLAVIYO_COUPON_ID doesn't match a real coupon
+ *                             in your account (double check you copied the
+ *                             Coupon ID, not the coupon's name).
+ *   400 Invalid input       -> unique_code format rejected, or a code
+ *                             collision (astronomically rare with 6 random
+ *                             chars, but possible if you're re-testing fast).
+ *   500 missing configuration -> env vars aren't set on Netlify, or aren't
+ *                             set on the specific deploy context you're
+ *                             testing against (Production vs Preview/branch
+ *                             deploys don't automatically inherit Production
+ *                             env vars unless you scope them to "All").
+ *
+ * Once you see the real Klaviyo error in the response, it's usually obvious
+ * which of these it is.
  */
 
 export default async (req) => {
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return jsonResponse({ error: 'Method not allowed' }, 405);
   }
 
   const KLAVIYO_PRIVATE_KEY = process.env.KLAVIYO_PRIVATE_KEY;
   const KLAVIYO_COUPON_ID = process.env.KLAVIYO_COUPON_ID;
 
-  if (!KLAVIYO_PRIVATE_KEY || !KLAVIYO_COUPON_ID) {
-    return new Response(JSON.stringify({ error: 'Server is missing Klaviyo configuration' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+  const missing = [];
+  if (!KLAVIYO_PRIVATE_KEY) missing.push('KLAVIYO_PRIVATE_KEY');
+  if (!KLAVIYO_COUPON_ID) missing.push('KLAVIYO_COUPON_ID');
+  if (missing.length) {
+    console.error('Missing environment variables:', missing.join(', '));
+    return jsonResponse({
+      error: 'Server is missing Klaviyo configuration',
+      missing
+    }, 500);
   }
 
   // Generate a short, unique, human-typeable code, e.g. "SMS15-7K2P9Q".
   const uniqueCode = `SMS15-${generateRandomSuffix(6)}`;
 
+  let klaviyoRes;
   try {
-    const klaviyoRes = await fetch('https://a.klaviyo.com/api/coupon-codes/', {
+    klaviyoRes = await fetch('https://a.klaviyo.com/api/coupon-codes/', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/vnd.api+json',
@@ -74,28 +94,54 @@ export default async (req) => {
         }
       })
     });
+  } catch (networkErr) {
+    // fetch() itself threw — e.g. DNS/network failure reaching Klaviyo.
+    console.error('Network error calling Klaviyo:', networkErr);
+    return jsonResponse({
+      error: 'Could not reach Klaviyo',
+      detail: String(networkErr && networkErr.message || networkErr)
+    }, 502);
+  }
 
-    if (!klaviyoRes.ok) {
-      const errBody = await klaviyoRes.text();
-      console.error('Klaviyo coupon-code creation failed:', klaviyoRes.status, errBody);
-      return new Response(JSON.stringify({ error: 'Could not create coupon code' }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' }
-      });
+  if (!klaviyoRes.ok) {
+    // Try to parse Klaviyo's structured error body; fall back to raw text
+    // if it isn't valid JSON.
+    let detail = null;
+    let rawBody = null;
+    try {
+      rawBody = await klaviyoRes.text();
+      const parsed = JSON.parse(rawBody);
+      detail = parsed && parsed.errors ? parsed.errors : parsed;
+    } catch (parseErr) {
+      detail = rawBody;
     }
 
-    return new Response(JSON.stringify({ code: uniqueCode }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (err) {
-    console.error('Error creating coupon code:', err);
-    return new Response(JSON.stringify({ error: 'Unexpected server error' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    console.error('Klaviyo coupon-code creation failed:', klaviyoRes.status, detail);
+
+    return jsonResponse({
+      error: 'Could not create coupon code',
+      klaviyo_status: klaviyoRes.status,
+      klaviyo_detail: detail,
+      hint: hintForStatus(klaviyoRes.status)
+    }, 502);
   }
+
+  return jsonResponse({ code: uniqueCode }, 200);
 };
+
+function hintForStatus(status) {
+  if (status === 401) return 'Check that KLAVIYO_PRIVATE_KEY is correct and has the coupon-codes:write scope.';
+  if (status === 404) return 'Check that KLAVIYO_COUPON_ID matches a real Coupon ID in your Klaviyo account (Content > Coupons).';
+  if (status === 400) return 'Klaviyo rejected the request body — see klaviyo_detail above for the exact field it flagged.';
+  return 'See klaviyo_detail above for specifics from Klaviyo.';
+}
+
+function jsonResponse(body, status) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
 
 function generateRandomSuffix(length) {
   // Avoids visually ambiguous characters (0/O, 1/I/L).
