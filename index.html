@@ -1191,10 +1191,14 @@ const KLAVIYO_LIST_ID = "SejjkU";
 const COUPON_ENDPOINT = "https://boundlessv2.com/.netlify/functions/generate-coupon-function";
 // Checks a typed-in code at checkout against the record generate-coupon-function.js
 // wrote to Netlify Blobs. See validate-coupon-function.js for what to deploy here.
-const COUPON_VALIDATE_ENDPOINT = "https://boundlessv2.com/.netlify/functions/validate-coupon";
+const COUPON_VALIDATE_ENDPOINT = "https://boundlessv2.com/.netlify/functions/validate-coupon-function";
 // Marks a code as used the moment an order is placed, so it can't be reapplied.
 // See redeem-coupon-function.js for what to deploy here.
-const COUPON_REDEEM_ENDPOINT = "https://boundlessv2.com/.netlify/functions/redeem-coupon";
+const COUPON_REDEEM_ENDPOINT = "https://boundlessv2.com/.netlify/functions/redeem-coupon-function";
+// Stores every phone number independent of Klaviyo, so signups aren't lost
+// if Klaviyo's SMS/subscription/coupon minting is down. See
+// capture-lead-function.js and view-leads-function.js.
+const LEAD_CAPTURE_ENDPOINT = "https://boundlessv2.com/.netlify/functions/capture-lead-function";
 
 function toggleNotifyForm(){
   const wrap = document.getElementById('gateNotifyWrap');
@@ -1248,8 +1252,27 @@ async function submitNotify(){
   msg.textContent = 'submitting...';
   msg.className = 'gate-notify-msg';
 
+  // 1) Capture the number ourselves first, unconditionally. This never
+  //    depends on Klaviyo, so it still works if Klaviyo's SMS/subscription
+  //    API is down, slow, or misconfigured. See capture-lead-function.js
+  //    and view-leads-function.js.
   try{
-    // 1) Subscribe the phone number to SMS marketing in Klaviyo (safe to do client-side).
+    await fetch(LEAD_CAPTURE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone })
+    });
+  } catch(captureErr){
+    // Non-fatal — log only. We still want the visitor to see a success
+    // state and a code even if this fails; the whole point of this call
+    // is to have a backup, not to become a new single point of failure.
+    console.error('Lead capture failed:', captureErr);
+  }
+
+  // 2) Best-effort: subscribe to Klaviyo SMS marketing. If Klaviyo is
+  //    having issues, this failing should NOT block the signup — the
+  //    number is already captured above.
+  try{
     const subRes = await fetch(`https://a.klaviyo.com/client/subscriptions/?company_id=${KLAVIYO_PUBLIC_KEY}`, {
       method: 'POST',
       headers: {
@@ -1279,42 +1302,44 @@ async function submitNotify(){
         }
       })
     });
-
     if(!subRes.ok){
-      msg.textContent = 'something went wrong — try again';
-      msg.className = 'gate-notify-msg error';
-      return;
+      console.error('Klaviyo SMS subscription failed (continuing anyway):', subRes.status);
     }
+  } catch(subErr){
+    console.error('Klaviyo SMS subscription request failed (continuing anyway):', subErr);
+  }
 
-    // 2) Ask our own backend (holds the private Klaviyo key) to mint a unique coupon code.
+  // 3) Best-effort: ask our backend to mint a real Klaviyo coupon code.
+  //    Also allowed to fail — falls back to a static code below.
+  let code = null;
+  try{
     const couponRes = await fetch(COUPON_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone })
     });
-
-    let code = null;
     if(couponRes.ok){
       const data = await couponRes.json();
       code = data.code;
     }
+  } catch(couponErr){
+    console.error('Coupon minting failed (continuing anyway):', couponErr);
+  }
 
-    msg.textContent = '';
-    msg.className = 'gate-notify-msg';
-    inputRow.style.display = 'none';
-    successBlock.classList.add('show');
+  msg.textContent = '';
+  msg.className = 'gate-notify-msg';
+  inputRow.style.display = 'none';
+  successBlock.classList.add('show');
 
-    if(code){
-      codeBtn.textContent = code;
-      codeBtn.dataset.code = code;
-    } else {
-      // Backend didn't return a code (not deployed yet, or it failed) — fall back gracefully.
-      codeBtn.textContent = 'sms15';
-      codeBtn.dataset.code = 'sms15';
-    }
-  } catch(err){
-    msg.textContent = 'something went wrong — try again';
-    msg.className = 'gate-notify-msg error';
+  if(code){
+    codeBtn.textContent = code;
+    codeBtn.dataset.code = code;
+  } else {
+    // Backend didn't return a code (Klaviyo down, not deployed yet, etc)
+    // — fall back gracefully. The phone number is still safely captured
+    // above regardless.
+    codeBtn.textContent = 'sms15';
+    codeBtn.dataset.code = 'sms15';
   }
 }
 
