@@ -497,6 +497,113 @@
   }
 
   /* ---------- LOOKBOOK (textless grid) ---------- */
+  /* ---------- SECRET SECTION ---------- */
+  .secret-toggle{
+    text-align:center;
+    margin:48px 0;
+    padding:24px;
+    border:1px dashed var(--line);
+    border-radius:4px;
+    background:rgba(255,255,255,0.4);
+  }
+  .secret-toggle-btn{
+    font-size:11px;
+    letter-spacing:0.14em;
+    color:var(--ink-soft);
+    padding:0;
+    border:none;
+    background:none;
+    text-decoration:underline;
+    cursor:pointer;
+    transition:color 0.2s ease;
+  }
+  .secret-toggle-btn:hover{
+    color:var(--ink);
+  }
+  .secret-section{
+    max-height:0;
+    overflow:hidden;
+    transition:max-height 0.4s ease;
+  }
+  .secret-section.active{
+    max-height:3000px;
+  }
+  .secret-header{
+    text-align:center;
+    margin-bottom:48px;
+    padding-top:32px;
+  }
+  .secret-header h2{
+    font-size:clamp(24px,5vw,48px);
+    margin-bottom:12px;
+  }
+  .secret-header p{
+    font-size:12px;
+    color:var(--ink-soft);
+    letter-spacing:0.08em;
+  }
+
+  /* ---------- SECRET PRODUCTS (PIXELATED) ---------- */
+  .secret-card{
+    cursor:pointer;
+  }
+  .secret-card-stage{
+    position:relative;
+    height:340px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    margin-bottom:12px;
+    border:1px solid var(--line);
+    overflow:hidden;
+  }
+  .secret-card-swing{
+    position:relative;
+    transform-origin:50% 0%;
+    animation:swing 3.2s ease-in-out infinite;
+  }
+  .secret-card-image-container{
+    position:relative;
+    width:100%;
+    height:100%;
+  }
+  .secret-card-image{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block;
+  }
+  .secret-card-pixelated{
+    position:absolute;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    image-rendering:pixelated;
+    image-rendering:-moz-crisp-edges;
+    image-rendering:crisp-edges;
+    opacity:1;
+    transition:opacity 0.3s ease;
+  }
+  .secret-card-pixelated.revealed{
+    opacity:0;
+    pointer-events:none;
+  }
+  .secret-card-info{
+    padding:0;
+  }
+  .secret-card-name{
+    font-weight:600;
+    font-size:13px;
+    margin-bottom:4px;
+    text-transform:capitalize;
+  }
+  .secret-card-price{
+    font-size:12px;
+    color:var(--ink-soft);
+    margin-bottom:12px;
+  }
+
   .grid{
     display:grid;
     grid-template-columns:repeat(2,1fr);
@@ -1038,6 +1145,18 @@
       <h2 class="gate-lookbook-title">lookbook</h2>
       <p class="gate-lookbook-note">a preview of what's dropping — the shop unlocks soon.</p>
       <div class="grid" id="gateLookbookGrid"></div>
+
+      <div class="secret-toggle">
+        <button class="secret-toggle-btn" onclick="toggleGateSecret()">👀</button>
+      </div>
+
+      <div class="secret-section" id="gateSecretSection">
+        <div class="secret-header">
+          <h2>upcoming collection</h2>
+          <p>coming in august 2026. updates on @boundlessv2</p>
+        </div>
+        <div class="grid" id="gateSecretGrid"></div>
+      </div>
     </div>
     <div class="footer">© 2026 boundless v2 — all rights reserved</div>
   </section>
@@ -1360,6 +1479,15 @@ const PRODUCTS = [
     desc:"this fits oversized. for a baggy fit, stay true to size." },
 ];
 
+const SECRET_PRODUCTS = [
+  { id:"s1", name:"offline longsleeve", price:35, img:PRODUCT_IMG,
+    desc:"releasing in august 2026" },
+  { id:"s2", name:"forever young longsleeve", price:35, img:STARS_TEE_IMG,
+    desc:"releasing in august 2026" },
+  { id:"s3", name:"psychotic longsleeve", price:35, img:TEE_IMG,
+    desc:"releasing in august 2026" },
+];
+
 const SIZES = ["s","m","l","xl"];
 const SHIPPING_FLAT = 8;
 const CHECKMARK_SVG = '<svg viewBox="0 0 24 24" fill="none"><path class="checkmark-path" d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1408,7 +1536,7 @@ async function saveUnlocked(){
   try{ await window.storage.set('bv2-unlocked', 'true'); }catch(e){}
 }
 
-function findProduct(id){ return PRODUCTS.find(p=>p.id===id); }
+function findProduct(id){ return PRODUCTS.find(p=>p.id===id) || SECRET_PRODUCTS.find(p=>p.id===id); }
 
 /* ====================== GATE ====================== */
 function applyLockState(){
@@ -1724,6 +1852,82 @@ function renderLookbook(){
   });
 }
 
+function toggleGateSecret(){
+  const section = document.getElementById('gateSecretSection');
+  section.classList.toggle('active');
+  if(section.classList.contains('active')){
+    renderGateSecretProducts();
+  }
+}
+
+function createPixelatedImage(img, canvas, pixelSize){
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  
+  ctx.drawImage(img, 0, 0, w / pixelSize, h / pixelSize);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(canvas, 0, 0, w / pixelSize, h / pixelSize, 0, 0, w, h);
+}
+
+function renderGateSecretProducts(){
+  const grid = document.getElementById('gateSecretGrid');
+  grid.innerHTML = '';
+  SECRET_PRODUCTS.forEach(p=>{
+    const card = document.createElement('div');
+    card.className = 'secret-card';
+    card.innerHTML = `
+      <div class="secret-card-stage">
+        <div class="secret-card-swing">
+          <div class="secret-card-image-container">
+            <img class="secret-card-image" src="${p.img}" alt="${p.name}" style="display:none;">
+            <canvas class="secret-card-pixelated" data-product-id="${p.id}"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="secret-card-info">
+        <div class="secret-card-name">${p.name}</div>
+        <div class="secret-card-price">$${p.price.toFixed(2)}</div>
+      </div>
+    `;
+
+    const img = card.querySelector('.secret-card-image');
+    const canvas = card.querySelector('.secret-card-pixelated');
+    const stage = card.querySelector('.secret-card-stage');
+
+    img.onload = () => {
+      createPixelatedImage(img, canvas, 10);
+    };
+    img.src = p.img;
+
+    const isMobile = window.innerWidth <= 768;
+    
+    if(isMobile){
+      stage.addEventListener('click', () => {
+        canvas.classList.add('revealed');
+      });
+    } else {
+      stage.addEventListener('mouseenter', () => {
+        canvas.classList.add('revealed');
+      });
+      stage.addEventListener('mouseleave', () => {
+        canvas.classList.remove('revealed');
+      });
+    }
+
+    card.addEventListener('click', (e) => {
+      if(!e.target.classList.contains('secret-card-pixelated')) {
+        openProduct(p.id);
+      }
+    });
+
+    grid.appendChild(card);
+  });
+}
+
 function openProduct(id){
   currentProductId = id;
   selectedDetailSize = null;
@@ -1867,6 +2071,7 @@ function goTo(page){
     document.querySelectorAll('.nav-link').forEach(l=>{
       l.classList.toggle('active', l.dataset.page===page);
     });
+    if(page === 'lookbook') renderLookbook();
   }
   window.scrollTo(0,0);
 }
