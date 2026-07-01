@@ -1185,7 +1185,7 @@ const TRACK_URL = "https://github.com/16clones/boundlessv2/raw/a560a65269ae27d16
 // Find your Public API Key (Site ID) at: Klaviyo > Settings > Account > API Keys
 const KLAVIYO_PUBLIC_KEY = "Rw5Lkx"; // 6-character public key / site ID
 // Find your List ID at: Klaviyo > Lists & Segments > open the list > it's in the URL
-const KLAVIYO_LIST_ID = "SejjkU";
+const KLAVIYO_LIST_ID = "RMwMkM";
 // URL of the backend function that mints a real, unique Klaviyo coupon code.
 // See generate-coupon-function.js (in the same download) for what to deploy here.
 const COUPON_ENDPOINT = "https://boundlessv2.com/.netlify/functions/generate-coupon-function";
@@ -1829,6 +1829,13 @@ function placeOrder(){
 /* ====================== INIT ====================== */
 loadState();
 renderGateLookbook();
+</script>
+
+<!-- Klaviyo onsite tracking -->
+<script async type='text/javascript' src='https://static.klaviyo.com/onsite/js/Rw5Lkx/klaviyo.js?company_id=Rw5Lkx'></script>
+<script type="text/javascript">
+//Initialize Klaviyo object on page load
+!function(){if(!window.klaviyo){window._klOnsite=window._klOnsite||[];try{window.klaviyo=new Proxy({},{get:function(n,i){return"push"===i?function(){var n;(n=window._klOnsite).push.apply(n,arguments)}:function(){for(var n=arguments.length,o=new Array(n),w=0;w<n;w++)o[w]=arguments[w];var t="function"==typeof o[o.length-1]?o.pop():void 0,e=new Promise((function(n){window._klOnsite.push([i].concat(o,[function(i){t&&t(i),n(i)}]))}));return e}}})}catch(n){window.klaviyo=window.klaviyo||[],window.klaviyo.push=function(){var n;(n=window._klOnsite).push.apply(n,arguments)}}}}();
 </script>
 </body>
 </html>
