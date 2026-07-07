@@ -1513,9 +1513,9 @@ function tryUnlock(){
    any time, e.g. new Date(2026, 6, 7, 0, 0, 0). */
 function getCountdownTarget(){
   const now = new Date();
-  let target = new Date(now.getFullYear(), 6, 7, 0, 0, 0); // month 6 = July
+  let target = new Date(now.getFullYear(), 6, 24, 0, 0, 0); // month 6 = July
   if(target.getTime() <= now.getTime()){
-    target = new Date(now.getFullYear() + 1, 6, 7, 0, 0, 0);
+    target = new Date(now.getFullYear() + 1, 6, 24, 0, 0, 0);
   }
   return target;
 }
